@@ -1,0 +1,201 @@
+'use strict';
+
+import { readfile, popen } from 'fs';
+
+function read_text(path) {
+	let data = readfile(path);
+
+	if (data == null)
+		return '';
+
+	return data;
+}
+
+function get_lines(text) {
+	text = trim(text || '');
+
+	if (!text)
+		return [];
+
+	return split(text, '\n');
+}
+
+function norm_mac(mac) {
+	if (!mac)
+		return '';
+
+	return lc(mac);
+}
+
+function split_ws(line) {
+	return split(trim(line), /[ \t]+/);
+}
+
+function load_dhcp_leases() {
+	let leases = {};
+	let text = read_text('/tmp/dhcp.leases');
+	let lns = get_lines(text);
+
+	for (let i = 0; i < length(lns); i++) {
+		let p = split_ws(lns[i]);
+
+		/*
+		 * /tmp/dhcp.leases format:
+		 * expiry mac ip hostname clientid
+		 */
+		if (length(p) >= 4) {
+			let mac = norm_mac(p[1]);
+			let hostname = p[3];
+
+			if (hostname == '*' || hostname == '-')
+				hostname = '?';
+
+			leases[mac] = {
+				ipaddr: p[2],
+				hostname: hostname
+			};
+		}
+	}
+
+	return leases;
+}
+
+function load_ipv4_arp_users() {
+	let leases = load_dhcp_leases();
+	let users = {};
+	let text = read_text('/proc/net/arp');
+	let lns = get_lines(text);
+
+	for (let i = 1; i < length(lns); i++) {
+		let p = split_ws(lns[i]);
+
+		/*
+		 * /proc/net/arp format:
+		 * IP address HW type Flags HW address Mask Device
+		 */
+		if (length(p) < 6)
+			continue;
+
+		let ip = p[0];
+		let flags = p[2];
+		let mac = norm_mac(p[3]);
+		let dev = p[5];
+
+		if (!mac || mac == '00:00:00:00:00:00')
+			continue;
+
+		/*
+		 * 0x2 = complete
+		 * 0x6 = complete + permanent / published in some cases
+		 */
+		if (flags != '0x2' && flags != '0x6')
+			continue;
+
+		if (!users[mac]) {
+			users[mac] = {
+				hostname: leases[mac] ? leases[mac].hostname : '?',
+				ipaddr: ip,
+				macaddr: mac,
+				device: dev
+			};
+		} else {
+			if (index(users[mac].ipaddr, ip) < 0)
+				users[mac].ipaddr = users[mac].ipaddr + '/' + ip;
+
+			if (!users[mac].device && dev)
+				users[mac].device = dev;
+		}
+	}
+
+	return users;
+}
+
+function merge_ipv6_neighbors(users) {
+	let fd = popen("ip -6 neigh show 2>/dev/null | grep -v ' fe80:'");
+
+	if (!fd)
+		return users;
+
+	let text = fd.read('all');
+	fd.close();
+
+	let lns = get_lines(text);
+
+	for (let n = 0; n < length(lns); n++) {
+		let p = split_ws(lns[n]);
+
+		/*
+		 * Example:
+		 * 240e:xxxx::123 dev br-lan lladdr aa:bb:cc:dd:ee:ff STALE
+		 */
+		if (length(p) < 5)
+			continue;
+
+		let ip6 = p[0];
+		let dev = '';
+		let mac = '';
+
+		for (let i = 1; i < length(p); i++) {
+			if (p[i] == 'dev' && i + 1 < length(p))
+				dev = p[i + 1];
+
+			if (p[i] == 'lladdr' && i + 1 < length(p))
+				mac = norm_mac(p[i + 1]);
+		}
+
+		if (!mac)
+			continue;
+
+		if (!users[mac]) {
+			users[mac] = {
+				hostname: '?',
+				ipaddr: ip6,
+				macaddr: mac,
+				device: dev
+			};
+		} else {
+			if (index(users[mac].ipaddr, ip6) < 0)
+				users[mac].ipaddr = users[mac].ipaddr + '/' + ip6;
+
+			if (!users[mac].device && dev)
+				users[mac].device = dev;
+		}
+	}
+
+	return users;
+}
+
+function get_userlist() {
+	let users = load_ipv4_arp_users();
+
+	users = merge_ipv6_neighbors(users);
+
+	let rv = [];
+
+	for (let mac in users)
+		push(rv, users[mac]);
+
+	return rv;
+}
+
+return {
+	'luci.onliner': {
+		getOnlineUsers: {
+			call: function() {
+				let userlist = get_userlist();
+
+				return {
+					onlineusers: sprintf('%d', length(userlist))
+				};
+			}
+		},
+
+		getOnlineUserlist: {
+			call: function() {
+				return {
+					userlist: get_userlist()
+				};
+			}
+		}
+	}
+};

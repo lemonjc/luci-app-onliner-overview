@@ -1,0 +1,21 @@
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Online User"
+msgstr "在线用户"
+
+msgid "No online users"
+msgstr "没有在线用户"
+
+msgid "Hostname"
+msgstr "主机名"
+
+msgid "IP Address"
+msgstr "IP 地址"
+
+msgid "MAC address"
+msgstr "MAC 地址"
+
+msgid "Interface"
+msgstr "接口"
